@@ -2,10 +2,11 @@
 # All rights reserved.
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-# 
+#
 import torch
 import json
 import numpy as np
+import os
 
 from sklearn.cluster import KMeans
 from scipy.stats import norm
@@ -22,6 +23,8 @@ from matplotlib import cm
 
 # from turbo_1.turbo_1 import Turbo1
 
+from scipy.spatial import KDTree
+AliasTree = KDTree
 
 # the input will be samples!
 class Classifier():
@@ -30,7 +33,7 @@ class Classifier():
         assert dims >= 1
         assert type(samples)  ==  type([])
         self.dims    =   dims
-        
+
         #create a gaussian process regressor
         noise        =   0.1
         m52          =   ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5)
@@ -42,14 +45,14 @@ class Classifier():
         self.samples = []
         self.X       = np.array([])
         self.fX      = np.array([])
-        
+
         #good region is labeled as zero
         #bad  region is labeled as one
         self.good_label_mean  = -1
         self.bad_label_mean   = -1
-        
+
         self.update_samples(samples)
-    
+
     def is_splittable_svm(self):
         plabel = self.learn_clusters()
         self.learn_boundary(plabel)
@@ -58,19 +61,19 @@ class Classifier():
             return False
         else:
             return True
-        
+
     def get_max(self):
         return np.max(self.fX)
-        
+
     def plot_samples_and_boundary(self, func, name):
         assert func.dims == 2
-        
+
         plabels   = self.svm.predict( self.X )
         good_counts = len( self.X[np.where( plabels == 0 )] )
         bad_counts  = len( self.X[np.where( plabels == 1 )] )
         good_mean = np.mean( self.fX[ np.where( plabels == 0 ) ] )
         bad_mean  = np.mean( self.fX[ np.where( plabels == 1 ) ] )
-        
+
         if np.isnan(good_mean) == False and np.isnan(bad_mean) == False:
             assert good_mean > bad_mean
 
@@ -88,11 +91,11 @@ class Classifier():
         true_y = np.array( true_y )
         pred_labels = self.svm.predict( np.c_[xv.ravel(), yv.ravel()] )
         pred_labels = pred_labels.reshape( xv.shape )
-        
+
         fig, ax = plt.subplots()
         ax.contour(xv, yv, true_y.reshape(xv.shape), cmap=cm.coolwarm)
         ax.contourf(xv, yv, pred_labels, alpha=0.4)
-        
+
         ax.scatter(self.X[ np.where(plabels == 0) , 0 ], self.X[ np.where(plabels == 0) , 1 ], marker='x', label="good-"+str(np.round(good_mean, 2))+"-"+str(good_counts) )
         ax.scatter(self.X[ np.where(plabels == 1) , 0 ], self.X[ np.where(plabels == 1) , 1 ], marker='x', label="bad-"+str(np.round(bad_mean, 2))+"-"+str(bad_counts)    )
         ax.legend(loc="best")
@@ -102,39 +105,35 @@ class Classifier():
         ax.set_ylim([-10, 10])
         plt.savefig(name)
         plt.close()
-    
+
     def get_mean(self):
         return np.mean(self.fX)
-        
+
     def update_samples(self, latest_samples):
         assert type(latest_samples) == type([])
-        X  = []
-        fX  = []
-        for sample in latest_samples:
-            X.append(  sample[0] )
-            fX.append( sample[1] )
-        
-        self.X          = np.asarray(X, dtype=np.float32).reshape(-1, self.dims)
-        self.fX         = np.asarray(fX,  dtype=np.float32).reshape(-1)
-        self.samples    = latest_samples       
-        
+        if latest_samples:
+            self.X = np.vstack([np.array(sample[0], dtype=np.float32).flatten()
+                                for sample in latest_samples])
+        else:
+            self.X = np.empty((0, self.dims))
+        self.fX = np.array([sample[1] for sample in latest_samples],
+                           dtype=np.float32)
+        self.samples = latest_samples
+
+        self.kd_tree = AliasTree(self.X) if (len(self.X) > 0) else None
+
     def train_gpr(self, samples):
-        X  = []
-        fX  = []
-        for sample in samples:
-            X.append(  sample[0] )
-            fX.append( sample[1] )
-        X  = np.asarray(X).reshape(-1, self.dims)
-        fX = np.asarray(fX).reshape(-1)
-        
-        # print("training GPR with ", len(X), " data X")        
+        X = [np.array(sample[0], dtype=np.float32).flatten() for sample in samples]
+        fX = np.array([sample[1] for sample in samples], dtype=np.float32)
+
+        # print("training GPR with ", len(X), " data X")
         self.gpr.fit(X, fX)
-    
+
     ###########################
     # BO sampling with EI
     ###########################
-    
-        
+
+
     def expected_improvement(self, X, xi=0.0001, use_ei = True):
         ''' Computes the EI at points X based on existing samples X_sample and Y_sample using a Gaussian process surrogate model.
         Args: X: Points at which EI shall be computed (m x d). X_sample: Sample locations (n x d).
@@ -143,11 +142,11 @@ class Classifier():
         Returns: Expected improvements at points X. '''
         X_sample = self.X
         Y_sample = self.fX.reshape((-1, 1))
-        
+
         gpr = self.gpr
-        
+
         mu, sigma = gpr.predict(X, return_std=True)
-        
+
         if not use_ei:
             return mu
         else:
@@ -162,7 +161,7 @@ class Classifier():
                 ei = imp * norm.cdf(Z) + sigma * norm.pdf(Z)
                 ei[sigma == 0.0] = 0.0
             return ei
-            
+
     def plot_boundary(self, X):
         if X.shape[1] > 2:
             return
@@ -173,7 +172,7 @@ class Classifier():
         ax.set_ylim([-10, 10])
         plt.savefig("boundary.pdf")
         plt.close()
-    
+
     def get_sample_ratio_in_region( self, cands, path ):
         total = len(cands)
         for node in path:
@@ -181,7 +180,7 @@ class Classifier():
             if len(cands) == 0:
                 return 0, np.array([])
             assert len(cands) > 0
-            cands = cands[ boundary.predict( cands ) == node[1] ] 
+            cands = cands[ boundary.predict( cands ) == node[1] ]
             # node[1] store the direction to go
         ratio = len(cands) / total
         assert len(cands) <= total
@@ -202,13 +201,13 @@ class Classifier():
         # so we need check here
 
         axes    = len( center )
-        
+
         final_L = []
         for axis in range(0, axes):
             L       = np.zeros( center.shape )
             L[axis] = 0.01
             ratio   = 1
-            
+
             while ratio >= 0.9:
                 L[axis] = L[axis]*2
                 if L[axis] >= (ub[axis] - lb[axis]):
@@ -226,28 +225,28 @@ class Classifier():
         print("center:", center)
         print("final lb:", lb_)
         print("final ub:", ub_)
-    
+
         count         = 0
         cands         = np.array([])
         while len(cands) < 10000:
             count    += 10000
             cands     = sobol.draw(count).to(dtype=torch.float64).cpu().detach().numpy()
-        
+
             cands     = (ub_ - lb_)*cands + lb_
             ratio, cands = self.get_sample_ratio_in_region(cands, path)
             samples_count = len( cands )
-        
-        #extract candidates 
-        
+
+        #extract candidates
+
         return cands
-            
+
     def propose_rand_samples_sobol(self, nums_samples, path, lb, ub):
-        
+
         #rejected sampling
         selected_cands = np.zeros((1, self.dims))
         seed   = np.random.randint(int(1e6))
         sobol  = SobolEngine(dimension = self.dims, scramble=True, seed=seed)
-        
+
         # scale the samples to the entire search space
         # ----------------------------------- #
         # while len(selected_cands) <= nums_samples:
@@ -263,7 +262,7 @@ class Classifier():
         # return cands
         # ----------------------------------- #
         #shrink the cands region
-        
+
         ratio_check, centers = self.get_sample_ratio_in_region(self.X, path)
         # no current samples located in the region
         # should not happen
@@ -271,10 +270,10 @@ class Classifier():
         # assert ratio_check > 0
         if ratio_check == 0 or len(centers) == 0:
             return self.propose_rand_samples( nums_samples, lb, ub )
-        
+
         lb_    = None
         ub_    = None
-        
+
         final_cands = []
         for center in centers:
             center = self.X[ np.random.randint( len(self.X) ) ]
@@ -282,8 +281,8 @@ class Classifier():
             ratio  = 1
             L      = 0.0001
             Blimit = np.max(ub - lb)
-            
-            while ratio == 1 and L < Blimit:                    
+
+            while ratio == 1 and L < Blimit:
                 lb_    = np.clip( center - L/2, lb, ub )
                 ub_    = np.clip( center + L/2, lb, ub )
                 cands_ = cp.deepcopy( cands )
@@ -301,32 +300,32 @@ class Classifier():
                 return self.propose_rand_samples( nums_samples, lb, ub )
             else:
                 return final_cands
-        
+
     def propose_samples_bo( self, nums_samples = 10, path = None, lb = None, ub = None, samples = None):
-        ''' Proposes the next sampling point by optimizing the acquisition function. 
-        Args: acquisition: Acquisition function. X_sample: Sample locations (n x d). 
-        Y_sample: Sample values (n x 1). gpr: A GaussianProcessRegressor fitted to samples. 
+        ''' Proposes the next sampling point by optimizing the acquisition function.
+        Args: acquisition: Acquisition function. X_sample: Sample locations (n x d).
+        Y_sample: Sample values (n x 1). gpr: A GaussianProcessRegressor fitted to samples.
         Returns: Location of the acquisition function maximum. '''
         assert path is not None and len(path) >= 0
         assert lb is not None and ub is not None
         assert samples is not None and len(samples) > 0
-        
+
         self.train_gpr( samples ) # learn in unit cube
-        
+
         dim  = self.dims
         nums_rand_samples = 10000
         if len(path) == 0:
             return self.propose_rand_samples(nums_samples, lb, ub)
-        
+
         X    = self.propose_rand_samples_sobol(nums_rand_samples, path, lb, ub)
         # print("samples in the region:", len(X) )
         # self.plot_boundary(X)
         if len(X) == 0:
             return self.propose_rand_samples(nums_samples, lb, ub)
-        
+
         X_ei = self.expected_improvement(X, xi=0.001, use_ei = True)
         row, col = X.shape
-    
+
         X_ei = X_ei.reshape(len(X))
         n = nums_samples
         if X_ei.shape[0] < n:
@@ -334,7 +333,7 @@ class Classifier():
         indices = np.argsort(X_ei)[-n:]
         proposed_X = X[indices]
         return proposed_X
-        
+
     ###########################
     # sampling with turbo
     ###########################
@@ -366,32 +365,32 @@ class Classifier():
     #     fX = fX*-1
     #
     #     return proposed_X, fX
-        
-    
-            
+
+
+
     ###########################
     # random sampling
     ###########################
-    
+
     def propose_rand_samples(self, nums_samples, lb, ub):
         x = np.random.uniform(lb, ub, size = (nums_samples, self.dims) )
         return x
-        
-        
+
+
     def propose_samples_rand( self, nums_samples = 10):
         return self.propose_rand_samples(nums_samples, self.lb, self.ub)
-                
+
     ###########################
     # learning boundary
     ###########################
-    
-        
+
+
     def get_cluster_mean(self, plabel):
-        assert plabel.shape[0] == self.fX.shape[0] 
-        
+        assert plabel.shape[0] == self.fX.shape[0]
+
         zero_label_fX = []
         one_label_fX  = []
-        
+
         for idx in range(0, len(plabel)):
             if plabel[idx] == 0:
                 zero_label_fX.append( self.fX[idx]  )
@@ -400,75 +399,82 @@ class Classifier():
             else:
                 print("kmean should only predict two clusters, Classifiers.py:line73")
                 os._exit(1)
-                
+
         good_label_mean = np.mean( np.array(zero_label_fX) )
         bad_label_mean  = np.mean( np.array(one_label_fX) )
         return good_label_mean, bad_label_mean
-        
+
     def learn_boundary(self, plabel):
         assert len(plabel) == len(self.X)
         self.svm.fit(self.X, plabel)
-        
+
     def learn_clusters(self):
         assert len(self.samples) >= 2, "samples must > 0"
         assert self.X.shape[0], "points must > 0"
         assert self.fX.shape[0], "fX must > 0"
         assert self.X.shape[0] == self.fX.shape[0]
-        
+
         tmp = np.concatenate( (self.X, self.fX.reshape([-1, 1]) ), axis = 1 )
         assert tmp.shape[0] == self.fX.shape[0]
-        
-        self.kmean  = self.kmean.fit(tmp)
-        plabel      = self.kmean.predict( tmp )
-        
-        # the 0-1 labels in kmean can be different from the actual
-        # flip the label is not consistent
-        # 0: good cluster, 1: bad cluster
-        
-        self.good_label_mean , self.bad_label_mean = self.get_cluster_mean(plabel)
-        
-        if self.bad_label_mean > self.good_label_mean:
-            for idx in range(0, len(plabel)):
-                if plabel[idx] == 0:
-                    plabel[idx] = 1
-                else:
-                    plabel[idx] = 0
-                    
-        self.good_label_mean , self.bad_label_mean = self.get_cluster_mean(plabel)
-        
-        return plabel
-        
-    def split_data(self):
-        good_samples = []
-        bad_samples  = []
-        train_good_samples = []
-        train_bad_samples  = []
-        if len( self.samples ) == 0:
-            return good_samples, bad_samples
-        
-        plabel = self.learn_clusters( )
-        self.learn_boundary( plabel )
-        
-        for idx in range(0, len(plabel)):
-            if plabel[idx] == 0:
-                #ensure the consistency
-                assert self.samples[idx][-1] - self.fX[idx] <= 1
-                good_samples.append( self.samples[idx] )
-                train_good_samples.append( self.X[idx] )
+
+        num_samples = 5
+        best_wcss = np.inf
+        best_means = None
+
+        for _ in range(num_samples):
+            if self.kd_tree is not None:
+                random_point = self.X[np.random.randint(len(self.X))]
+                _, indices = self.kd_tree.query(random_point, k=2)
+                initial_centroids = np.hstack((self.X[indices],
+                                               self.fX[indices].reshape(-1, 1)))
+                kmean = KMeans(n_clusters=2, init=initial_centroids, n_init=1)
             else:
-                bad_samples.append( self.samples[idx] )
-                train_bad_samples.append( self.X[idx] )
-        
-        train_good_samples = np.array(train_good_samples)
-        train_bad_samples  = np.array(train_bad_samples)
-                        
+                # Fallback to random initialisation
+                kmean = KMeans(n_clusters=2, n_init=10)
+
+            kmean.fit(tmp)
+            current_label = kmean.predict(tmp)
+            current_wcss = kmean.inertia_
+
+            # Evaluate cluster quality
+            if current_wcss < best_wcss:
+                best_wcss = current_wcss
+                plabel = current_label
+                best_means = (kmean.cluster_centers_)
+
+        # Assign best labels found to the class instance
+        self.kmean = KMeans(n_clusters=2, init=best_means, n_init=1)
+
+        # self.kmean  = self.kmean.fit(tmp)
+        # plabel      = self.kmean.predict( tmp )
+
+        # # the 0-1 labels in kmean can be different from the actual
+        # # flip the label is not consistent
+        # # 0: good cluster, 1: bad cluster
+
+        # self.good_label_mean , self.bad_label_mean = self.get_cluster_mean(plabel)
+
+        # if self.bad_label_mean > self.good_label_mean:
+        #     for idx in range(0, len(plabel)):
+        #         if plabel[idx] == 0:
+        #             plabel[idx] = 1
+        #         else:
+        #             plabel[idx] = 0
+
+        # self.good_label_mean , self.bad_label_mean = self.get_cluster_mean(plabel)
+
+        return plabel
+
+    def split_data(self):
+        if len( self.samples ) == 0:
+            return [], []
+
+        plabel = self.learn_clusters( )
+        self.learn_boundary(plabel)
+
+        good_samples = [self.samples[i] for i, label in enumerate(plabel) if label == 0]
+        bad_samples = [self.samples[i] for i, label in enumerate(plabel) if label != 0]
+
         assert len(good_samples) + len(bad_samples) == len(self.samples)
-                
+
         return  good_samples, bad_samples
-
-
-
-    
-    
-    
-
