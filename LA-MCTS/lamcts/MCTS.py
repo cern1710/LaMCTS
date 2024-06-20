@@ -2,7 +2,7 @@
 # All rights reserved.
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-# 
+#
 import json
 import collections
 import copy as cp
@@ -39,23 +39,23 @@ class MCTS:
         self.best_value_trace        =  []
         self.sample_counter          =  0
         self.visualization           =  False
-        
+
         self.LEAF_SAMPLE_SIZE        =  leaf_size
         self.kernel_type             =  kernel_type
         self.gamma_type              =  gamma_type
-        
+
         self.solver_type             = 'bo' #solver can be 'bo' or 'turbo'
-        
+
         print("gamma_type:", gamma_type)
-        
+
         #we start the most basic form of the tree, 3 nodes and height = 1
         root = Node( parent = None, dims = self.dims, reset_id = True, kernel_type = self.kernel_type, gamma_type = self.gamma_type )
         self.nodes.append( root )
-        
+
         self.ROOT = root
         self.CURT = self.ROOT
         self.init_train()
-        
+
     def populate_training_data(self):
         #only keep root
         self.ROOT.obj_counter = 0
@@ -64,11 +64,11 @@ class MCTS:
         self.nodes.clear()
         new_root  = Node(parent = None,   dims = self.dims, reset_id = True, kernel_type = self.kernel_type, gamma_type = self.gamma_type )
         self.nodes.append( new_root )
-        
+
         self.ROOT = new_root
         self.CURT = self.ROOT
         self.ROOT.update_bag( self.samples )
-    
+
     def get_leaf_status(self):
         status = []
         for node in self.nodes:
@@ -77,25 +77,22 @@ class MCTS:
             else:
                 status.append( False )
         return np.array( status )
-        
+
     def get_split_idx(self):
         split_by_samples = np.argwhere( self.get_leaf_status() == True ).reshape(-1)
         return split_by_samples
-    
+
     def is_splitable(self):
         status = self.get_leaf_status()
-        if True in status:
-            return True
-        else:
-            return False
-        
+        return (True in status)
+
     def dynamic_treeify(self):
         # we bifurcate a node once it contains over 20 samples
         # the node will bifurcate into a good and a bad kid
         self.populate_training_data()
         assert len(self.ROOT.bag) == len(self.samples)
         assert len(self.nodes)    == 1
-                
+
         while self.is_splitable():
             to_split = self.get_split_idx()
             #print("==>to split:", to_split, " total:", len(self.nodes) )
@@ -114,38 +111,38 @@ class MCTS:
                 bad_kid  = Node(parent = parent, dims = self.dims, reset_id = False, kernel_type = self.kernel_type, gamma_type = self.gamma_type )
                 good_kid.update_bag( good_kid_data )
                 bad_kid.update_bag(  bad_kid_data  )
-            
+
                 parent.update_kids( good_kid = good_kid, bad_kid = bad_kid )
-            
+
                 self.nodes.append(good_kid)
                 self.nodes.append(bad_kid)
-                
+
             #print("continue split:", self.is_splitable())
-        
+
         self.print_tree()
-        
+
     def collect_samples(self, sample, value = None):
         #TODO: to perform some checks here
         if value == None:
             value = self.func(sample)*-1
-            
+
         if value > self.curt_best_value:
             self.curt_best_value  = value
-            self.curt_best_sample = sample 
+            self.curt_best_sample = sample
             self.best_value_trace.append( (value, self.sample_counter) )
         self.sample_counter += 1
         self.samples.append( (sample, value) )
         return value
-        
+
     def init_train(self):
-        
+
         # here we use latin hyper space to generate init samples in the search space
         init_points = latin_hypercube(self.ninits, self.dims)
         init_points = from_unit_cube(init_points, self.lb, self.ub)
-        
+
         for point in init_points:
             self.collect_samples(point)
-        
+
         print("="*10 + 'collect '+ str(len(self.samples) ) +' points for initializing MCTS'+"="*10)
         print("lb:", self.lb)
         print("ub:", self.ub)
@@ -153,7 +150,7 @@ class MCTS:
         print("inits:", self.ninits)
         print("dims:", self.dims)
         print("="*58)
-        
+
     def print_tree(self):
         print('-'*100)
         for node in self.nodes:
@@ -162,7 +159,7 @@ class MCTS:
 
     def reset_to_root(self):
         self.CURT = self.ROOT
-    
+
     def load_agent(self):
         node_path = 'mcts_agent'
         if os.path.isfile(node_path) == True:
@@ -175,12 +172,12 @@ class MCTS:
         print("dumping the agent.....")
         with open(node_path,"wb") as outfile:
             pickle.dump(self, outfile)
-            
+
     def dump_samples(self):
         sample_path = 'samples_'+str(self.sample_counter)
         with open(sample_path, "wb") as outfile:
             pickle.dump(self.samples, outfile)
-    
+
     def dump_trace(self):
         trace_path = 'best_values_trace'
         final_results_str = json.dumps(self.best_value_trace)
@@ -194,9 +191,7 @@ class MCTS:
         if self.visualization == True:
             curt_node.plot_samples_and_boundary(self.func)
         while curt_node.is_leaf() == False:
-            UCT = []
-            for i in curt_node.kids:
-                UCT.append( i.get_xbar() )
+            UCT = [i.get_xbar() for i in curt_node.kids]
             choice = np.random.choice(np.argwhere(UCT == np.amax(UCT)).reshape(-1), 1)[0]
             path.append( (curt_node, choice) )
             curt_node = curt_node.kids[choice]
@@ -210,18 +205,16 @@ class MCTS:
         self.reset_to_root()
         curt_node = self.ROOT
         path      = [ ]
-        
+
         while curt_node.is_leaf() == False:
-            UCT = []
-            for i in curt_node.kids:
-                UCT.append( i.get_uct(self.Cp) )
+            UCT = [i.get_uct(self.Cp) for i in curt_node.kids]
             choice = np.random.choice(np.argwhere(UCT == np.amax(UCT)).reshape(-1), 1)[0]
             path.append( (curt_node, choice) )
             curt_node = curt_node.kids[choice]
             print("=>", curt_node.get_name(), end=' ' )
         print("")
         return curt_node, path
-    
+
     def backpropogate(self, leaf, acc):
         curt_node = leaf
         while curt_node is not None:
@@ -252,7 +245,7 @@ class MCTS:
                         value = self.collect_samples( samples[idx], values[idx] )
                     else:
                         raise Exception("solver not implemented")
-                    
+
                     self.backpropogate( leaf, value )
             print("total samples:", len(self.samples) )
             print("current best f(x):", np.absolute(self.curt_best_value) )
